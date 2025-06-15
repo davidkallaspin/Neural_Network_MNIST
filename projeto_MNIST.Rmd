@@ -1,0 +1,142 @@
+library(keras)
+
+# --- Carregamento dos Dados MNIST ---
+mnist <- dataset_mnist()
+
+x_train <- mnist$train$x
+y_train <- mnist$train$y
+
+x_test <- mnist$test$x
+y_test_original <- mnist$test$y
+
+# --- Exploração dos Dados ---
+# str(x_train) # 60.000 imagens de treinamento, Cada imagem tem 28 x 28 pixels
+# str(y_train) # é um vetor com 60.000 valores inteiros de 0 a 9.
+
+# --- Plotando uma amostra ---
+par(mfcol=c(6,6))
+par(mar=c(0, 0, 2, 0), xaxs='i', yaxs='i')
+set.seed(1)
+indices <- sample(nrow(x_train), 36) # Correção: Use nrow(x_train) para plotar do x_train
+for (idx in indices) {
+  im <- x_train[idx,,]
+  im <- t(apply(im, 2, rev))
+  image(1:28, 1:28, im, col=gray((0:255)/255),
+        xaxt='n', main=paste(y_train[idx]))
+}
+
+# --- Preparando os Dados ---
+# Achatar as imagens de 28x28 pixels para vetores de 784 pixels
+x_train <- array_reshape(x_train, c(nrow(x_train), 784))
+x_test <- array_reshape(x_test, c(nrow(x_test), 784))
+
+# Rescalonar os valores dos pixels de 0-255 para 0-1
+x_train <- x_train / 255
+x_test <- x_test / 255
+
+# Converter os rótulos y para o formato one-hot encoding
+y_train <- to_categorical(y_train, 10)
+y_test <- to_categorical(y_test_original, 10)
+
+# --- Definindo o modelo ---
+modelo1 <- keras_model_sequential()
+modelo1 %>%
+  layer_dense(units = 256, activation = 'relu', input_shape = c(784)) %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 100, activation = 'relu') %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 80, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 50, activation = 'relu') %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units = 30, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 10, activation = 'softmax') # Camada de saída com 10 neurônios (para 10 classes) e ativação softmax
+
+summary(modelo1)
+
+# --- Compilando o modelo ---
+modelo1 <- compile(modelo1,
+                   loss = 'categorical_crossentropy', # Função de perda para classificação multiclasse
+                   optimizer = "adam",                 # Otimizador Adam
+                   metrics = c("accuracy")             # Métrica para monitorar durante o treinamento
+)
+
+# --- Definindo o Early Stopping Callback ---
+# Este callback monitorará a perda de validação e interromperá o treinamento
+# se ela não melhorar por um certo número de épocas.
+callbacks_list <- list(
+  callback_early_stopping(
+    monitor = "val_loss",          # Métrica a ser monitorada (perda no conjunto de validação)
+    min_delta = 0,                 # Mudança mínima a ser considerada uma melhora (0 para qualquer melhora)
+    patience = 10,                 # Número de épocas sem melhora antes de parar o treinamento
+    verbose = 1,                   # 1 para imprimir mensagens quando o treinamento for interrompido
+    mode = "auto",                 # "auto" (infere 'min' ou 'max' com base na métrica)
+    restore_best_weights = TRUE    # Restaura os pesos do modelo da época com a melhor 'val_loss'
+  )
+)
+
+
+# --- Treinando o modelo com Early Stopping ---
+history <- modelo1 %>% fit(
+  x_train, y_train,
+  epochs = 50,                     # Defina um número de épocas que seja "seguro" e grande o suficiente
+  # para que o Early Stopping possa agir se necessário.
+  # Antes era 30, aumentei para 50 para dar mais margem.
+  batch_size = 128,
+  validation_split = 0.2,          # Usa 20% dos dados de treino para validação
+  callbacks = callbacks_list       # Adiciona o callback de Early Stopping aqui
+)
+
+# --- Visualizando o Histórico de Treinamento ---
+history # Exibe o resumo do histórico
+plot(history) # Plota as curvas de perda e acurácia ao longo das épocas
+
+
+# --- Avaliando o modelo no conjunto de teste ---
+eval <- modelo1 %>% evaluate(x_test, y_test)
+cat("\n--- Avaliação Final no Conjunto de Teste ---\n")
+print(eval)
+cat("--------------------------------------------\n")
+
+
+# --- Armazenando resultados da avaliação ---
+comparacao <- data.frame(modelo = character(),
+                         loss = numeric(),
+                         acc = numeric(),
+                         stringsAsFactors = FALSE) # Usar FALSE para evitar problemas com fatores
+comparacao[nrow(comparacao)+1, ] <- c("rede:256_128", eval["loss"], eval["accuracy"])
+# Note: eval é um vetor nomeado, então acessar por nome é mais robusto: eval["loss"] e eval["accuracy"]
+print(comparacao)
+
+
+# --- Realizando Predições ---
+# 'predict' retorna as probabilidades, 'k_argmax' pega o índice da maior probabilidade (a classe predita)
+# 'k_get_value' converte o tensor Keras em um vetor R.
+pred1 <- modelo1 %>% predict(x_test) %>% k_argmax() %>% k_get_value()
+
+# --- Comparando Previsões com Rótulos Originais ---
+# Cria um data frame para visualizar os resultados reais vs. previstos
+resultados_predicao <- data.frame(y_original = y_test_original, y_predito = pred1)
+print(head(resultados_predicao)) # Exibe as primeiras linhas da comparação
+
+# --- Calculando a Acurácia Manualmente ---
+# Compara os rótulos originais com os previstos e calcula a proporção de acertos.
+acuracia_manual <- mean(y_test_original == as.numeric(pred1))
+cat("\n--- Acurácia Manual no Conjunto de Teste ---\n")
+print(acuracia_manual)
+cat("--------------------------------------------\n")
+
+# --- Calculando RMSE (opcional e para fins didáticos em classificação) ---
+# Lembre-se que RMSE é mais adequado para problemas de regressão.
+if (requireNamespace("Metrics", quietly = TRUE)) {
+  rmse_val <- Metrics::rmse(y_test_original, pred1)
+  cat("\n--- RMSE no Conjunto de Teste (para referência) ---\n")
+  print(rmse_val)
+  cat("--------------------------------------------------\n")
+} else {
+  message("Pacote 'Metrics' não instalado. Não foi possível calcular o RMSE.")
+}
+
