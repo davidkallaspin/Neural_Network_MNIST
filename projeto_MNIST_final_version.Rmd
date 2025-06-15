@@ -1,0 +1,482 @@
+---
+
+title: "Projeto MNIST: Classificação de Dígitos com Redes Neurais Densa e Convolucional"
+author: "David Kallas Pinto"
+date: "`r Sys.Date()`"
+
+output:
+  html_document:
+  toc: true # Tabela de Conteúdo
+  toc_depth: 3
+  theme: cosmo # Tema visual
+  highlight: tango # Destaque de código
+
+---
+
+### 1. Introdução:
+Esse projeto foi elaborado com o objetivo de praticar o desenvolvimento de redes neurais em Machine Learning usando a base de dados MNIST para classificação de dígitos manuscritos usando R. Durante o projeto, foram elaboradas duas redes neurais, a primeira uma Rede Neural Densa (MLP) e posteriormente uma Rede Neural Convolucional (CNN). Durante o desenvolvimento, a ideia foi explorar diferentes hiperparâmetros e complexidades de arquiteturas para as redes neurais a fim de testar e compreender como cada uma delas pode performar e exigir diferentes níveis de processamento computacional. Ao final, foi possível avaliar por meio das métricas (accuracy e loss) a performance de cada modelo e observar onde os erros foram cometidos.
+
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+echo = TRUE,
+message = FALSE,
+warning = FALSE
+)
+
+# install.packages("keras")
+# install.packages("Metrics")
+# install.packages("ggplot2")
+# install.packages("reshape2")
+
+library(keras)
+library(Metrics)
+library(ggplot2)
+library(reshape2) # Para usar melt
+
+```
+
+### 2. Configuração e Carregamento dos Dados
+
+```{r}
+
+# Carrega a biblioteca Keras
+library(keras)
+
+# Carrega o conjunto de dados MNIST
+mnist <- dataset_mnist()
+
+# Separando os dados em conjuntos de treinamento e teste
+x_train <- mnist$train$x
+y_train <- mnist$train$y
+
+x_test <- mnist$test$x
+y_test_original <- mnist$test$y # Guardamos o y_test original para comparação posterior
+
+```
+
+### 3. Exploração e Visualização dos Dados
+
+```{r}
+
+str(x_train) # 60.000 imagens, cada uma 28x28 pixels
+str(y_train) # 60.000 rótulos (inteiros de 0 a 9)
+str(x_test) # 10.000 imagens de teste, cada uma 28x28 pixels
+str(y_test_original) # 10.000 rótulos de teste
+
+```
+Cada pixel da imagem tem um valor inteiro entre 0 e 255, representando a intensidade do cinza. Para uma melhor compreensão visual, vamos plotar algumas amostras aleatórias do conjunto de treinamento.
+
+```{r}
+
+# Configura o layout da plotagem para mostrar 6x6 imagens
+par(mfcol = c(6, 6))
+# Ajusta as margens para maximizar o espaço das imagens
+par(mar = c(0, 0, 2, 0), xaxs = 'i', yaxs = 'i')
+
+# Define uma semente para reprodutibilidade das amostras e seleciona 36 índices aleatórios
+set.seed(42)
+indices <- sample(nrow(x_train), 36)
+
+# Loop para plotar cada imagem selecionada
+for (idx in indices) {
+  im <- x_train[idx, , ] # Extrai a imagem
+  im <- t(apply(im, 2, rev))  # Transpõe e inverte as linhas
+  image(1:28, 1:28, im, col = gray((0:255)/255),
+        xaxt = 'n', main = paste("Dígito:", y_train[idx]))  # Plota a imagem
+}
+
+# Restaura as configurações de plotagem padrão após o loop
+par(mfrow=c(1,1))
+
+```
+
+### 4. Pré-processamento dos Dados (Comum/Inicial)
+
+As Redes Neurais esperam dados em um formato específico. Aqui, faremos os pré-processamentos iniciais que serão comuns ou ajustados para ambas as arquiteturas. Os valores dos pixels (0-255) são convertidos para uma escala de 0 a 1.
+
+```{r}
+
+# Converte os valores dos pixels de inteiros (0-255) para ponto flutuante (0-1)
+x_train <- x_train / 255
+x_test <- x_test / 255
+
+print(x_train[1, 10, 10])
+
+```
+
+Aqui por exemplo, temos um exemplo de Valor de Pixel Normalizado.
+
+#### One-Hot Encoding dos Rótulos
+
+Os rótulos (dígitos de 0 a 9) são convertidos para o formato one-hot encoding. Cada rótulo se torna um vetor binário de 10 posições, onde apenas a posição correspondente ao dígito é 1 e as outras são 0. Por exemplo, o dígito `3` vira `[0, 0, 0, 1, 0, 0, 0, 0, 0, 0]`.
+
+```{r}
+
+# Converte os vetores de rótulos inteiros para matrizes de classe binária (one-hot)
+y_train <- to_categorical(y_train, 10) # 10 classes (0 a 9)
+y_test <- to_categorical(y_test_original, 10) # y_test_original é usado aqui
+
+exemplo_y_original <- y_test_original[1:3]
+exemplo_y_onehot <- y_test[1:3, ]
+
+```
+
+### 5. Rede Neural Densa (MLP - Perceptron Multicamadas)
+
+#### 5.1. Pré-processamento Específico para MLP
+
+Para a MLP, as imagens 28x28 precisam ser achatadas em vetores de 784 pixels.
+
+```{r}
+
+x_train_mlp <- array_reshape(x_train, c(nrow(x_train), 784))
+x_test_mlp <- array_reshape(x_test, c(nrow(x_test), 784))
+
+```
+
+Cada linha agora representa uma imagem completa como um vetor único.
+
+#### 5.2. Definição da Arquitetura MLP
+
+Nossa MLP terá múltiplas camadas densas com ativação ReLU e camadas de Dropout para regularização. A camada final usará Softmax para classificação multiclasse.
+
+```{r}
+
+modelo_mlp <- keras_model_sequential()
+
+modelo_mlp %>%
+  layer_dense(units = 256, activation = 'relu', input_shape = c(784)) %>% # Primeira camada, define a forma de entrada
+  layer_dropout(rate = 0.4) %>% # Dropout para regularização (40% dos neurônios "desligados")
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 100, activation = 'relu') %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 80, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 50, activation = 'relu') %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units = 30, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 10, activation = 'softmax') # Camada de saída: 10 neurônios para as 10 classes, ativação softmax para probabilidades
+
+summary(modelo_mlp)
+
+```
+
+#### 5.3. Compilação da MLP
+
+Antes de treinar, o modelo precisa ser compilado, definindo a função de perda, o otimizador e as métricas.  
+A compilação prepara o modelo para o treinamento, definindo como ele aprenderá e será avaliado.
+
+```{r}
+
+# Compila o modelo com as configurações de treinamento
+modelo_mlp <- compile(modelo_mlp,
+                      loss = 'categorical_crossentropy', # Função de perda para problemas de classificação multiclasse (com one-hot encoding)
+                      optimizer = "adam",                 # Otimizador Adam
+                      metrics = c("accuracy")             # Métrica para avaliar o desempenho durante o treinamento
+)
+
+```
+
+#### 5.4. Treinamento da MLP com Early Stopping
+
+Treinaremos o modelo usando o conjunto de treinamento. O `Early Stopping` será usado para monitorar a performance no conjunto de validação e interromper o treinamento se a perda de validação parar de melhorar, evitando assim o overfitting.
+
+```{r}
+
+# Define o callback de Early Stopping
+# Monitora a val_loss (perda no conjunto de validação)
+# patience = 10 significa que o treinamento será interrompido se a val_loss não melhorar por 10 épocas consecutivas
+# restore_best_weights = TRUE garante que o modelo mantenha os pesos da melhor época de validação
+callbacks_mlp <- list(
+  callback_early_stopping(
+    monitor = "val_loss",
+    min_delta = 0,
+    patience = 10,
+    verbose = 1,
+    mode = "auto",
+    restore_best_weights = TRUE
+  )
+)
+
+history_mlp <- modelo_mlp %>% fit(
+  x_train_mlp, y_train,        # Dados de treinamento e rótulos
+  epochs = 50,                 # Número máximo de épocas. Early Stopping pode parar antes.
+  batch_size = 128,            # Número de amostras por atualização de gradiente
+  validation_split = 0.2,      # 20% dos dados de treino serão usados para validação
+  callbacks = callbacks_mlp    # Aplica o callback de Early Stopping
+)
+
+```
+
+#### 5.5. Avaliação e Interpretação dos Resultados da MLP
+
+Vamos analisar o histórico de treinamento para entender como o modelo aprendeu e, em seguida, avaliá-lo no conjunto de teste para uma estimativa final de seu desempenho.
+
+```{r}
+
+metrics_mlp <- as.data.frame(history_mlp$metrics)
+metrics_mlp$epoch <- 1:nrow(metrics_mlp)
+
+history_melt_mlp <- melt(metrics_mlp, id.vars = "epoch",
+                         measure.vars = c("loss", "val_loss", "accuracy", "val_accuracy"))
+
+# Plota a perda e a acurácia ao longo das épocas
+ggplot(history_melt_mlp, aes(x = epoch, y = value, color = variable)) +
+  geom_line(size = 1) +
+  facet_wrap(~ ifelse(grepl("loss", variable), "Loss", "Accuracy"), scales = "free_y") +
+  labs(title = "Histórico de Treinamento MLP",
+       x = "Época",
+       y = "Valor da Métrica",
+       color = "Métrica") +
+  theme_minimal() +
+  scale_color_manual(values = c("loss" = "blue", "val_loss" = "darkblue",
+                                "accuracy" = "red", "val_accuracy" = "darkred"))
+
+```
+
+A análise do gráfico acima nos mostra a evolução da perda e acurácia. Agora, vamos avaliar o modelo no conjunto de teste.
+
+```{r}
+
+# Avalia o modelo no conjunto de teste (dados não vistos)
+eval_mlp <- modelo_mlp %>% evaluate(x_test_mlp, y_test)
+print(eval_mlp) # Exibe a perda e acurácia no teste
+
+```
+
+A acurácia no conjunto de teste é a estimativa mais imparcial do desempenho do modelo em dados novos.
+
+```{r}
+
+# Realiza predições no conjunto de teste
+# predict() retorna probabilidades, k_argmax() pega a classe com maior probabilidade
+pred_mlp <- modelo_mlp %>% predict(x_test_mlp) %>% k_argmax() %>% k_get_value()
+
+# Calcula a acurácia manualmente para confirmação
+acuracia_manual_mlp <- mean(y_test_original == as.numeric(pred_mlp))
+print(acuracia_manual_mlp)
+
+```
+
+Acurácia Manual da MLP no Conjunto de Teste
+
+```{r}
+
+# Cria um dataframe para armazenar o resultado da MLP
+resultados_comparacao <- data.frame(Modelo = "Rede Densa (MLP)",
+                                    Perda_Teste = eval_mlp["loss"],
+                                    Acuracia_Teste = eval_mlp["accuracy"],
+                                    stringsAsFactors = FALSE)
+
+```
+
+#### Análise da MLP:
+
+A Rede Densa alcançou uma acurácia de teste de aproximadamente `r round(eval_mlp["accuracy"] * 100, 2)`%. Agora, vamos aplicar um modelo de Rede Neural Convolucional, a qual didaticamente é vista como uma rede projetada para lidar melhor com a estrutura espacial de imagens, pois elas preservam a estrutura espacial dos dados de imagem e aprendem características hierárquicas (bordas, formas, etc.) de forma mais eficaz.
+
+### 6. Rede Neural Convolucional (CNN)
+
+#### 6.1. Pré-processamento Específico para CNN
+
+Para CNNs, as imagens precisam ser formatadas como um tensor 4D: `(número_de_amostras, largura, altura, canais)`. Para as imagens em tons de cinza do MNIST, o número de canais é 1.
+
+```{r}
+
+# Reajusta os arrays 3D para arrays 4D (número_de_imagens, largura, altura, canais).
+# Para MNIST (escala de cinza), o número de canais é 1.
+x_train_cnn <- array_reshape(x_train, c(nrow(x_train), 28, 28, 1))
+x_test_cnn <- array_reshape(x_test, c(nrow(x_test), 28, 28, 1))
+
+str(x_train_cnn)
+
+```
+
+A dimensão extra '1' indica um único canal de cor (tons de cinza).
+
+#### 6.2. Definição da Arquitetura CNN
+
+Nossa CNN incluirá camadas convolucionais (`layer_conv_2d`) para extração de características, camadas de pooling (`layer_max_pooling_2d`) para redução de dimensionalidade e camadas densas para classificação.
+
+```{r}
+
+# Inicia um novo modelo sequencial para a CNN
+modelo_cnn <- keras_model_sequential()
+
+modelo_cnn %>%
+
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = 'relu', input_shape = c(28, 28, 1)) %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = 'relu') %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 128, activation = 'relu') %>%
+  layer_dropout(rate = 0.5) %>%
+  layer_dense(units = 10, activation = 'softmax')
+
+summary(modelo_cnn)
+
+```
+
+#### 6.3. Compilação da CNN
+
+A compilação da CNN segue o mesmo princípio da MLP.
+
+```{r}
+
+# Compila o modelo com as mesmas configurações da MLP para comparação justa
+modelo_cnn <- compile(modelo_cnn,
+                      loss = 'categorical_crossentropy',
+                      optimizer = "adam",
+                      metrics = c("accuracy")
+)
+
+```
+
+A função de perda e o otimizador são os mesmos, permitindo uma comparação direta da performance das arquiteturas.
+
+#### 6.4. Treinamento da CNN com Early Stopping
+
+Treinaremos a CNN. O `Early Stopping` será novamente importante para encontrar o ponto ótimo de generalização e evitar o overfitting.
+
+```{r}
+
+# Define o callback de Early Stopping para a CNN (mesmos parâmetros)
+callbacks_cnn <- list(
+  callback_early_stopping(
+    monitor = "val_loss",
+    min_delta = 0,
+    patience = 10,
+    verbose = 1,
+    mode = "auto",
+    restore_best_weights = TRUE
+  )
+)
+
+history_cnn <- modelo_cnn %>% fit(
+  x_train_cnn, y_train,
+  epochs = 50, # Número máximo de épocas. Early Stopping pode parar antes.
+  batch_size = 128,
+  validation_split = 0.2,
+  callbacks = callbacks_cnn
+)
+
+```
+
+#### 6.5. Avaliação e Interpretação dos Resultados da CNN
+
+Vamos plotar o histórico de treinamento da CNN e avaliá-la no conjunto de teste.
+
+```{r}
+
+# Acessa as métricas diretamente do objeto history_cnn
+metrics_cnn <- as.data.frame(history_cnn$metrics)
+metrics_cnn$epoch <- 1:nrow(metrics_cnn)
+
+history_melt_cnn <- melt(metrics_cnn, id.vars = "epoch",
+                         measure.vars = c("loss", "val_loss", "accuracy", "val_accuracy"))
+
+ggplot(history_melt_cnn, aes(x = epoch, y = value, color = variable)) +
+  geom_line(size = 1) +
+  facet_wrap(~ ifelse(grepl("loss", variable), "Loss", "Accuracy"), scales = "free_y") +
+  labs(title = "Histórico de Treinamento CNN",
+       x = "Época",
+       y = "Valor da Métrica",
+       color = "Métrica") +
+  theme_minimal() +
+  scale_color_manual(values = c("loss" = "blue", "val_loss" = "darkblue",
+                                "accuracy" = "red", "val_accuracy" = "darkred"))
+
+```
+
+Vamos avaliar a CNN no conjunto de teste.
+
+```{r}
+
+# Avalia o modelo CNN no conjunto de teste
+eval_cnn <- modelo_cnn %>% evaluate(x_test_cnn, y_test)
+print(eval_cnn)
+
+```
+
+Espera-se uma acurácia significativamente maior para a CNN.
+
+```{r}
+
+# Realiza predições no conjunto de teste
+pred_cnn <- modelo_cnn %>% predict(x_test_cnn) %>% k_argmax() %>% k_get_value()
+
+# Calcula a acurácia manualmente
+acuracia_manual_cnn <- mean(y_test_original == as.numeric(pred_cnn))
+print(acuracia_manual_cnn)
+
+# Adiciona o resultado da CNN ao dataframe de comparação
+resultados_comparacao[nrow(resultados_comparacao)+1, ] <- c("Rede Convolucional (CNN)",
+                                                             eval_cnn["loss"],
+                                                             eval_cnn["accuracy"])
+
+```
+
+### 7. Comparação e Conclusão Final
+
+Aqui, vamos comparar diretamente os resultados de ambas as arquiteturas e concluir sobre a eficácia de cada uma para o problema MNIST.
+
+#### 7.1 Tabela de performance
+
+```{r}
+
+temp_resultados_comparacao <- resultados_comparacao
+
+temp_resultados_comparacao$Perda_Teste <- as.numeric(temp_resultados_comparacao$Perda_Teste)
+temp_resultados_comparacao$Acuracia_Teste <- as.numeric(temp_resultados_comparacao$Acuracia_Teste)
+
+knitr::kable(temp_resultados_comparacao, 
+             caption = "Comparação da Performance dos Modelos (Conjunto de Teste)",
+             col.names = c("Modelo", "Perda no Teste", "Acurácia no Teste"),
+             digits = 3
+)
+
+```
+
+#### 7.2 Visualização dos erros:
+
+```{r}
+erros_indices <- which(y_test_original != as.numeric(pred_cnn))
+
+# Plota até 9 erros de exemplo
+num_erros_plot <- min(length(erros_indices), 9)
+
+# Configura o layout da plotagem para mostrar as imagens de erro
+par(mfcol = c(3, 3))
+par(mar = c(0, 0, 2, 0), xaxs = 'i', yaxs = 'i')
+
+# Seleciona aleatoriamente os índices dos erros para plotar
+erros_selecionados <- sample(erros_indices, num_erros_plot)
+
+# Loop para plotar cada imagem de erro
+for (idx in erros_selecionados) {
+  im <- mnist$test$x[idx, , ]
+  im <- t(apply(im, 2, rev))
+  image(1:28, 1:28, im, col = gray((0:255)/255),
+        xaxt = 'n', main = paste("Real:", y_test_original[idx], "| Previsto:", pred_cnn[idx]))
+}
+
+# Restaura as configurações de plotagem padrão após o loop
+par(mfrow=c(1,1))
+```
+
+#### 7.3 Conclusão
+
+Podemos concluir que:
+
+Ficou muito claro o porquê as CNNs são a escolha preferencial para problemas de visão computacional. Uma vez que, apresentaram performance superior em comparação com uma MLP. A CNN não só entregou uma acurácia maior no conjunto de teste, como também mostrou uma convergência mais rápida e estável durante o treinamento.
+
+A implementação do Early Stopping foi importante para evitar o overfitting e reduzir tempo de processamento. O modelo estava no seu melhor equilíbrio entre aprender e generalizar, evitando que continuasse a treinar e talvez sobreajustar aos dados de treinamento. Sem ele, poderíamos ter pego um modelo ligeiramente menos otimizado.
+
+A visualização dos erros da CNN foi bastante interessante para trazer um entendimento mais concreto da base e de como existem dígitos “confusos” que podem levar a inconsistências. Mesmo com alta acurácia, é sempre interessante ver onde o modelo ainda “tropeça”.
+
+As redes neurais, em sua estrutura de ‘black box’ possuem hiperparâmetros que devem ser explorados e testados para que somente assim, a melhor arquitetura seja alcançada.
